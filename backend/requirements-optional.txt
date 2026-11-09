@@ -1,0 +1,6 @@
+# Voice (on-device). The speech model downloads on first use.
+faster-whisper
+pyttsx3
+# Keyboard control and the play key for playback (Windows)
+pyautogui
+pygetwindow

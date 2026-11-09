@@ -1,0 +1,41 @@
+{
+  "name": "flow-desktop",
+  "version": "1.0.0",
+  "description": "FLOW: voice-driven multi-agent coding assistant (desktop app)",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "start": "npm run build && electron .",
+    "electron": "electron .",
+    "dist": "npm run build && electron-builder --win"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "4.3.1",
+    "electron": "31.7.7",
+    "electron-builder": "24.13.3",
+    "vite": "5.4.10"
+  },
+  "build": {
+    "appId": "com.flow.desktop",
+    "productName": "FLOW",
+    "files": [
+      "electron/**/*",
+      "dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "../backend/dist/flow-backend.exe",
+        "to": "backend"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  }
+}
