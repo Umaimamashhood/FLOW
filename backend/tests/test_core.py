@@ -3,13 +3,13 @@ import time
 
 import pytest
 
-from flow import config, db, desktop, planner, settings, state
-from flow.agents import web_agent
-from flow.agents.base import Result
-from flow.agents.coding_agent import CodingAgent, is_gui_program
-from flow.agents.system_agent import SystemAgent, safe_path
-from flow.agents.web_agent import WATCH, WebAgent
-from flow.orchestrator import ConflictError, Orchestrator
+import config, db, desktop, planner, settings, state
+from agents import web_agent
+from agents.base import Result
+from agents.coding_agent import CodingAgent, is_gui_program
+from agents.system_agent import SystemAgent, safe_path
+from agents.web_agent import WATCH, WebAgent
+from orchestrator import ConflictError, Orchestrator
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +66,7 @@ def test_path_inside_permitted_folder_allowed(tmp_path):
 
 def test_rule_planner_make_calculator():
     steps = planner.plan("make a calculator")
-    assert [s["action"] for s in steps] == ["create_folder", "open_in_vscode", "build_project", "run_program"]
+    assert [s["action"] for s in steps] == ["create_folder", "open_in_vscode", "build_project", "install_dependencies", "run_program"]
 
 
 def test_rule_planner_spec_example_partially_and_file_creation():
@@ -135,7 +135,7 @@ def test_git_init_creates_repository(sandbox):
 
 def test_media_plays_clear_best_match(monkeypatch):
     opened = []
-    monkeypatch.setattr(web_agent, "open_url", opened.append)
+    monkeypatch.setattr(web_agent, "open_url", lambda url, browser="chrome": opened.append(url))
     monkeypatch.setattr(web_agent, "search_candidates", lambda q: [
         ("aaaaaaaaaaa", "Cooking pasta at home"), ("bbbbbbbbbbb", "Shape of You - Ed Sheeran")])
     r = WebAgent().execute("play_media", {"query": "shape of you"}, {})
@@ -144,7 +144,7 @@ def test_media_plays_clear_best_match(monkeypatch):
 
 def test_ambiguous_media_asks_then_plays_chosen_result(sandbox, monkeypatch):
     opened = []
-    monkeypatch.setattr(web_agent, "open_url", opened.append)
+    monkeypatch.setattr(web_agent, "open_url", lambda url, browser="chrome": opened.append(url))
     monkeypatch.setattr(web_agent, "search_candidates", lambda q: [
         ("aaaaaaaaaaa", "Cooking pasta"), ("bbbbbbbbbbb", "Driving tutorial")])
     use_plan(monkeypatch, [step("Web", "play_media", query="shape of you")])
@@ -297,7 +297,7 @@ def test_settings_validation_and_persistence():
 
 def test_api_end_to_end(sandbox):
     from fastapi.testclient import TestClient
-    from flow.server import app
+    from server import app
 
     with TestClient(app) as client:
         r = client.post("/commands", json={"text": "search for python"})
@@ -313,7 +313,7 @@ def test_api_end_to_end(sandbox):
 
 def test_websocket_pushes_task_snapshot(sandbox, monkeypatch):
     from fastapi.testclient import TestClient
-    from flow.server import app
+    from server import app
 
     def slow(self, params, ctx):  # keep the task visible long enough for the 0.4 s poll to see it
         time.sleep(1.5)
@@ -340,10 +340,10 @@ import io
 import struct
 import wave
 
-from flow import planner as planner_mod
-from flow import voice
-from flow.agents import system_agent as sa_mod
-from flow.agents.assistant_agent import AssistantAgent
+import planner as planner_mod
+import voice
+from agents import system_agent as sa_mod
+from agents.assistant_agent import AssistantAgent
 
 
 def _silent_wav():
@@ -384,7 +384,7 @@ def test_model_failure_falls_back_to_rules(monkeypatch):
 
     monkeypatch.setattr(planner_mod.llm, "generate", down)
     actions = [s["action"] for s in planner_mod.plan("make a calculator")]
-    assert actions == ["create_folder", "open_in_vscode", "build_project", "run_program"]
+    assert actions == ["create_folder", "open_in_vscode", "build_project", "install_dependencies", "run_program"]
 
 
 def test_invalid_model_plan_is_rejected(monkeypatch):
@@ -426,3 +426,122 @@ def test_open_app_does_not_launch_in_mock_mode():
 def test_assistant_answers_in_mock_mode():
     r = AssistantAgent().execute("answer", {"text": "hello"}, {})
     assert r.ok and "mock" in r.message
+
+
+def test_missing_packages_are_detected(tmp_path):
+    from agents.coding_agent import missing_packages
+    source = "import os\nimport flow_no_such_package_xyz\nfrom tkinter import Tk\n"
+    assert missing_packages(source, tmp_path) == ["flow_no_such_package_xyz"]
+
+
+def test_auto_run_skips_confirmation_inside_projects_folder(sandbox):
+    settings.update({"auto_run_programs": True})
+    folder = config.PROJECTS_DIR / "hello"
+    folder.mkdir(parents=True)
+    main = folder / "main.py"
+    main.write_text("print('hi from flow')\n")
+    r = CodingAgent().execute("run_program", {}, {"main_file": str(main)})
+    assert r.ok and "hi from flow" in r.message
+
+
+def test_voice_volume_accepts_whole_numbers():
+    s = settings.update({"voice_volume": 1})
+    assert s["voice_volume"] == 1.0 and isinstance(s["voice_volume"], float)
+
+
+def test_clear_requests_never_reach_the_model(monkeypatch):
+    monkeypatch.setattr(config, "MOCK_MODE", False)
+
+    def must_not_call(*a, **k):
+        raise AssertionError("the model should not be asked for a clear request")
+
+    monkeypatch.setattr(planner_mod.llm, "generate", must_not_call)
+    assert planner_mod.plan("make a calculator")[0]["action"] == "create_folder"
+    assert planner_mod.plan("search for python")[0]["action"] == "search"
+
+
+def test_unclear_requests_go_to_the_model(monkeypatch):
+    monkeypatch.setattr(config, "MOCK_MODE", False)
+    monkeypatch.setattr(planner_mod.llm, "generate", lambda *a, **k: (
+        '{"steps":[{"agent":"Assistant","action":"answer","parameters":{"text":"hi"}}]}'))
+    assert planner_mod.plan("make a website for my bakery")[0]["action"] == "answer"
+
+
+# ---------- browsing, volume, dependencies, speed ----------
+from agents.coding_agent import detect_packages
+
+
+def auto_confirm(orch, tid, timeout=20.0):
+    """Approve every confirmation the task asks for until it finishes."""
+    end = time.time() + timeout
+    while time.time() < end:
+        task = db.get_task(tid)
+        if task["status"] in ("Completed", "Failed"):
+            return task
+        if task["status"] == "Awaiting Confirmation":
+            try:
+                orch.confirm(tid, True)
+            except ConflictError:
+                pass
+        time.sleep(0.05)
+    raise AssertionError("task did not finish")
+
+
+def test_detect_packages_skips_stdlib_and_local_files(tmp_path):
+    (tmp_path / "helper.py").write_text("x = 1\n")
+    (tmp_path / "main.py").write_text("import os\nimport pygame\nimport helper\nfrom cv2 import x\n")
+    assert detect_packages(tmp_path) == ["opencv-python", "pygame"]
+
+
+def test_install_dependencies_asks_first(sandbox):
+    (sandbox / "game.py").write_text("import pygame\n")
+    r = CodingAgent().execute("install_dependencies", {}, {"main_file": str(sandbox / "game.py")})
+    assert r.needs_confirmation and "pygame" in r.message
+
+
+def test_set_volume_mock_ok():
+    assert SystemAgent().execute("set_volume", {"direction": "up", "steps": 5}, {}).ok
+
+
+def test_open_url_uses_chrome_in_mock_mode():
+    r = WebAgent().execute("open_url", {"url": "https://mail.google.com"}, {})
+    assert r.ok and "Chrome" in r.message
+
+
+def test_type_on_page_mock_ok():
+    assert WebAgent().execute("type_on_page", {"url": "https://chatgpt.com", "text": "hello"}, {}).ok
+
+
+def test_missing_package_is_installed_then_program_runs(sandbox, monkeypatch):
+    use_plan(monkeypatch, [
+        step("System", "create_folder", name="pkg-test"),
+        step("System", "create_file", path="main.py", content="import nonexistent_flow_pkg_xyz\nprint('ok')\n"),
+        step("Coding", "run_program"),
+    ])
+    orch = Orchestrator()
+    tid = orch.submit("make a program that needs a package")
+    task = auto_confirm(orch, tid)
+    assert task["status"] == "Completed"
+    actions = [s["action"] for s in task["subtasks"]]
+    assert "install_dependencies" in actions and actions.count("run_program") >= 2
+
+
+def test_known_website_opens_in_chrome_mock():
+    r = SystemAgent().execute("open_app", {"name": "gmail on google"}, {})
+    assert r.ok and "Chrome" in r.message
+
+
+
+def test_audio_is_normalised_and_silence_is_trimmed():
+    import numpy as np
+    from voice import prepare
+    quiet = np.zeros(16000, dtype=np.float32)
+    quiet[8000:9600] = 0.05
+    out = prepare(quiet)
+    assert out.size < quiet.size and abs(float(np.max(np.abs(out))) - 0.9) < 1e-3
+
+
+def test_no_command_list_is_sent_to_the_speech_engine():
+    import voice
+    source = open(voice.__file__, encoding="utf-8").read()
+    assert "initial_prompt" not in source

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { WS_URL } from "./api";
 
-// Keeps the active task and pending confirmation in sync with the backend, reconnecting if needed.
+// Keeps the active task and any pending approval in sync with the backend, reconnecting if needed.
 export function useLive() {
   const [live, setLive] = useState({ active: null, awaiting: null, connected: false });
 
@@ -18,7 +18,7 @@ export function useLive() {
         setLive((s) => ({ ...s, ...data, connected: true }));
       };
       socket.onclose = () => {
-        setLive((s) => ({ ...s, connected: false }));
+        setLive((s) => ({ ...s, connected: false, active: null, awaiting: null }));
         if (!closed) timer = setTimeout(connect, 1000);
       };
     };

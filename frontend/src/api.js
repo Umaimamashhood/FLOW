@@ -1,15 +1,13 @@
+// Every call to the FLOW backend (127.0.0.1:8765). Errors carry the backend's plain-language message.
 export const BASE = "http://127.0.0.1:8765";
 export const WS_URL = "ws://127.0.0.1:8765/ws";
 
 async function request(path, options = {}) {
   let res;
   try {
-    res = await fetch(BASE + path, {
-      headers: { "Content-Type": "application/json" },
-      ...options,
-    });
+    res = await fetch(BASE + path, { headers: { "Content-Type": "application/json" }, ...options });
   } catch {
-    throw new Error("Cannot reach the FLOW backend on 127.0.0.1:8765. Is it running?");
+    throw new Error("FLOW's backend is not running. Start it with python main.py.");
   }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.detail || `Request failed (${res.status}).`);
@@ -21,8 +19,11 @@ const json = (value) => JSON.stringify(value);
 export const api = {
   status: () => request("/status"),
   models: () => request("/models"),
+  settings: () => request("/settings"),
+  saveSettings: (values) => request("/settings", { method: "PUT", body: json(values) }),
   submit: (text, mode = "text") => request("/commands", { method: "POST", body: json({ text, mode }) }),
   tasks: (search = "", page = 1) => request(`/tasks?search=${encodeURIComponent(search)}&page=${page}`),
+  task: (id) => request(`/tasks/${id}`),
   remove: (id) => request(`/tasks/${id}`, { method: "DELETE" }),
   clearHistory: () => request("/history/clear", { method: "POST" }),
   pause: (id) => request(`/tasks/${id}/pause`, { method: "POST" }),
@@ -30,9 +31,6 @@ export const api = {
   abort: (id) => request(`/tasks/${id}/abort`, { method: "POST" }),
   confirm: (id, approved, choice = null) =>
     request(`/tasks/${id}/confirm`, { method: "POST", body: json({ approved, choice }) }),
-  settings: () => request("/settings"),
-  saveSettings: (values) => request("/settings", { method: "PUT", body: json(values) }),
-  speak: (text) => request("/voice/speak", { method: "POST", body: json({ text }) }),
   transcribe: async (wavBlob) => {
     const res = await fetch(BASE + "/voice/transcribe", {
       method: "POST",

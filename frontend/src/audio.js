@@ -1,12 +1,18 @@
-// Microphone capture: records raw PCM at 16 kHz and writes a 16-bit mono WAV (SRS 3.1.2).
-// No browser decoding is needed, so compressed-format errors cannot occur.
-
+// Records the microphone as 16 kHz mono WAV. Stops by itself after you finish speaking.
 export const MIN_SECONDS = 0.4;
 
 export class Recorder {
-  constructor() {
+  // onAutoStop is called when the speaker has paused (or nothing was said for a while).
+  constructor({ onAutoStop = null, silenceMs = 1200, quietMs = 8000, threshold = 0.012, maxSeconds = 30 } = {}) {
     this.chunks = [];
     this.ready = null;
+    this.onAutoStop = onAutoStop;
+    this.silenceMs = silenceMs;
+    this.quietMs = quietMs;
+    this.threshold = threshold;
+    this.maxSeconds = maxSeconds;
+    this.spoke = false;
+    this.fired = false;
   }
 
   start() {
@@ -15,20 +21,44 @@ export class Recorder {
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       });
       this.ctx = new AudioContext();
+      this.startedAt = performance.now();
+      this.lastVoice = this.startedAt;
       const source = this.ctx.createMediaStreamSource(this.stream);
       this.processor = this.ctx.createScriptProcessor(4096, 1, 1);
-      this.processor.onaudioprocess = (e) => {
-        this.chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
-      };
+      this.processor.onaudioprocess = (e) => this.handleAudio(e.inputBuffer.getChannelData(0));
       source.connect(this.processor);
       this.processor.connect(this.ctx.destination);
     })();
     return this.ready;
   }
 
+  handleAudio(data) {
+    this.chunks.push(new Float32Array(data));
+    if (this.fired) return;
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    const level = Math.sqrt(sum / data.length);
+    const now = performance.now();
+    if (level > this.threshold) {
+      this.spoke = true;
+      this.lastVoice = now;
+    }
+    const silentFor = now - this.lastVoice;
+    const elapsed = now - this.startedAt;
+    const done =
+      (this.spoke && silentFor > this.silenceMs) ||
+      (!this.spoke && silentFor > this.quietMs) ||
+      elapsed > this.maxSeconds * 1000;
+    if (done && this.onAutoStop) {
+      this.fired = true;
+      this.onAutoStop();
+    }
+  }
+
   // Resolves to a WAV blob, or null when the recording was too short to be speech.
   async stop() {
     await this.ready;
+    this.fired = true;
     this.processor.disconnect();
     this.stream.getTracks().forEach((t) => t.stop());
     const rate = this.ctx.sampleRate;
@@ -40,7 +70,7 @@ export class Recorder {
       offset += chunk.length;
     }
     await this.ctx.close();
-    if (total / rate < MIN_SECONDS) return null;
+    if (total / rate < MIN_SECONDS || !this.spoke) return null;
     const resampled = await resampleTo16k(samples, rate);
     return encodeWav(resampled, 16000);
   }
