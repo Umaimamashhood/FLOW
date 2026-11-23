@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+frontend/node_modules/
+frontend/dist/
+frontend/release/
+backend/dist/
+backend/build/
+*.spec
+
+backend/flow.db
+backend/tests/test_results.txt

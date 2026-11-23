@@ -1,0 +1,19 @@
+# Core: the backend server and its HTTP clients
+fastapi
+uvicorn[standard]
+requests
+pydantic
+yt-dlp
+numpy
+
+# Voice: speech to text (downloads a model on first use) and text to speech
+faster-whisper
+pyttsx3
+
+# Desktop control: keyboard, windows and media keys (Windows)
+pyautogui
+pygetwindow
+
+# Tests
+pytest
+httpx2
